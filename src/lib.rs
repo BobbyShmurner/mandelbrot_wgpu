@@ -65,20 +65,46 @@ impl Vertex {
     }
 }
 
+#[repr(C)]
+#[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
+struct View {
+    position: [f32; 3],
+    zoom: f32,
+}
+
+// impl View {
+//     fn desc<'a>() -> wgpu::Buffer<'a> {
+//         use std::mem;
+
+//         wgpu::BufferDescriptor {
+//             label: Some("View Buffer"),
+//             size: mem::size_of::<Self>() as u64,
+//             usage: wgpu::BufferUsages::UNIFORM,
+//             mapped_at_creation: true,
+//         }
+//     }
+// }
+
 const VERTICES: &[Vertex] = &[
     Vertex {
-        position: [0.0, 0.5, 0.0],
-        color: [1.0, 0.0, 0.0],
+        position: [-1.0, -1.0, 0.0],
+        color: [0.5, 0.0, 0.5],
     },
     Vertex {
-        position: [-0.5, -0.5, 0.0],
-        color: [0.0, 1.0, 0.0],
+        position: [1.0, -1.0, 0.0],
+        color: [0.5, 0.0, 0.5],
     },
     Vertex {
-        position: [0.5, -0.5, 0.0],
-        color: [0.0, 0.0, 1.0],
+        position: [1.0, 1.0, 0.0],
+        color: [0.5, 0.0, 0.5],
+    },
+    Vertex {
+        position: [-1.0, 1.0, 0.0],
+        color: [0.5, 0.0, 0.5],
     },
 ];
+
+const INDICES: &[u16] = &[0, 1, 2, 2, 3, 0];
 
 struct State {
     surface: wgpu::Surface,
@@ -87,9 +113,13 @@ struct State {
     config: wgpu::SurfaceConfiguration,
     size: winit::dpi::PhysicalSize<u32>,
     window: Window,
+    view: View,
     render_pipeline: wgpu::RenderPipeline,
     vertex_buffer: wgpu::Buffer,
-    vert_count: u32,
+    index_buffer: wgpu::Buffer,
+    view_buffer: wgpu::Buffer,
+    bind_group: wgpu::BindGroup,
+    num_indices: u32,
     clear_col: RGBA,
 }
 
@@ -186,10 +216,24 @@ impl State {
 
         let shader = device.create_shader_module(wgpu::include_wgsl!("../shaders/shader.wgsl"));
 
+        let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            entries: &[wgpu::BindGroupLayoutEntry {
+                binding: 0,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Uniform,
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+                count: None,
+            }],
+            label: Some("Bind Group Layout"),
+        });
+
         let render_pipeline_layout =
             device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
                 label: Some("Render Pipeline Layout"),
-                bind_group_layouts: &[],
+                bind_group_layouts: &[&bind_group_layout],
                 push_constant_ranges: &[],
             });
 
@@ -234,7 +278,33 @@ impl State {
             usage: wgpu::BufferUsages::VERTEX,
         });
 
-        let vert_count = VERTICES.len() as u32;
+        let index_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("Index Buffer"),
+            contents: bytemuck::cast_slice(INDICES),
+            usage: wgpu::BufferUsages::INDEX,
+        });
+
+        let view = View {
+            position: [-1.0, -0.0, 0.0],
+            zoom: 0.01,
+        };
+
+        let view_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("View Buffer"),
+            contents: bytemuck::cast_slice(&[view]),
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+        });
+
+        let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("Bind Group"),
+            layout: &bind_group_layout,
+            entries: &[wgpu::BindGroupEntry {
+                binding: 0,
+                resource: view_buffer.as_entire_binding(),
+            }],
+        });
+
+        let num_indices = INDICES.len() as u32;
 
         Self {
             window,
@@ -243,9 +313,13 @@ impl State {
             queue,
             config,
             size,
+            view,
             render_pipeline,
             vertex_buffer,
-            vert_count,
+            index_buffer,
+            view_buffer,
+            bind_group,
+            num_indices,
             clear_col: RED.into(),
         }
     }
@@ -286,7 +360,12 @@ impl State {
         }
     }
 
-    fn update(&mut self) {}
+    fn update(&mut self) {
+        self.view.zoom *= 0.99;
+
+        self.queue
+            .write_buffer(&self.view_buffer, 0, bytemuck::cast_slice(&[self.view]));
+    }
 
     fn render(&mut self) -> Result<(), wgpu::SurfaceError> {
         let output = self.surface.get_current_texture()?;
@@ -315,8 +394,11 @@ impl State {
             });
 
             render_pass.set_pipeline(&self.render_pipeline);
+            render_pass.set_bind_group(0, &self.bind_group, &[]);
             render_pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
-            render_pass.draw(0..self.vert_count, 0..1);
+            render_pass.set_index_buffer(self.index_buffer.slice(..), wgpu::IndexFormat::Uint16);
+
+            render_pass.draw_indexed(0..self.num_indices, 0, 0..1);
         }
 
         self.queue.submit(std::iter::once(encoder.finish()));
