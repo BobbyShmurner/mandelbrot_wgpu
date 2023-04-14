@@ -18,20 +18,26 @@ fn vs_main(in: VertexInput) -> VertexOutput {
     return out;
 }
 
-struct View {
+struct Camera {
     pos: vec3<f32>,
     zoom: f32,
 }
 
 @group(0) @binding(0)
-var<uniform> view: View;
+var<uniform> cam: Camera;
 
 @fragment
 fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
+    // if length(in.pos.xy - cam.pos.xy) < 50.0 {
+    //     return vec4<f32>(1.0, 0.0, 0.0, 1.0);
+    // }
+
+    // return vec4<f32>((in.clip_position.x + cam.pos.x) / 400.0, (in.clip_position.y - cam.pos.y) / 400.0, 0.0, 1.0);
+
     let max_step: u32 = 50u;
     let max_val: f32 = 2.0;
 
-    let c: vec2<f32> = in.clip_position.xy * view.zoom + view.pos.xy;
+    let c: vec2<f32> = (in.clip_position.xy - cam.pos.xy) * cam.zoom;
     var z: vec2<f32> = vec2(0.0, 0.0);
     var break_point: u32 = 0u;
 

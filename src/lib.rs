@@ -1,5 +1,6 @@
 use wgpu::util::DeviceExt;
 use winit::{
+    dpi::PhysicalPosition,
     event::*,
     event_loop::{ControlFlow, EventLoop},
     window::{Window, WindowBuilder},
@@ -67,23 +68,18 @@ impl Vertex {
 
 #[repr(C)]
 #[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
-struct View {
+struct Camera {
     position: [f32; 3],
     zoom: f32,
 }
 
-// impl View {
-//     fn desc<'a>() -> wgpu::Buffer<'a> {
-//         use std::mem;
-
-//         wgpu::BufferDescriptor {
-//             label: Some("View Buffer"),
-//             size: mem::size_of::<Self>() as u64,
-//             usage: wgpu::BufferUsages::UNIFORM,
-//             mapped_at_creation: true,
-//         }
-//     }
-// }
+impl Camera {
+    fn write_buffer(self, state: &mut State) {
+        state
+            .queue
+            .write_buffer(&state.camera_buffer, 0, bytemuck::cast_slice(&[self]));
+    }
+}
 
 const VERTICES: &[Vertex] = &[
     Vertex {
@@ -106,6 +102,9 @@ const VERTICES: &[Vertex] = &[
 
 const INDICES: &[u16] = &[0, 1, 2, 2, 3, 0];
 
+const PIXEL_ZOOM_SENSITVITY: f32 = 0.01;
+const LINE_ZOOM_SENSITVITY: f32 = 0.05;
+
 struct State {
     surface: wgpu::Surface,
     device: wgpu::Device,
@@ -113,14 +112,15 @@ struct State {
     config: wgpu::SurfaceConfiguration,
     size: winit::dpi::PhysicalSize<u32>,
     window: Window,
-    view: View,
+    camera: Camera,
     render_pipeline: wgpu::RenderPipeline,
     vertex_buffer: wgpu::Buffer,
     index_buffer: wgpu::Buffer,
-    view_buffer: wgpu::Buffer,
+    camera_buffer: wgpu::Buffer,
     bind_group: wgpu::BindGroup,
     num_indices: u32,
-    clear_col: RGBA,
+    mouse_down: bool,
+    mouse_pos: PhysicalPosition<f64>,
 }
 
 impl State {
@@ -284,14 +284,14 @@ impl State {
             usage: wgpu::BufferUsages::INDEX,
         });
 
-        let view = View {
-            position: [-1.0, -0.0, 0.0],
+        let camera = Camera {
+            position: [size.width as f32 * 0.5, size.height as f32 * 0.5, 0.0],
             zoom: 0.01,
         };
 
-        let view_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("View Buffer"),
-            contents: bytemuck::cast_slice(&[view]),
+        let camera_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("Camera Buffer"),
+            contents: bytemuck::cast_slice(&[camera]),
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
         });
 
@@ -300,7 +300,7 @@ impl State {
             layout: &bind_group_layout,
             entries: &[wgpu::BindGroupEntry {
                 binding: 0,
-                resource: view_buffer.as_entire_binding(),
+                resource: camera_buffer.as_entire_binding(),
             }],
         });
 
@@ -313,14 +313,15 @@ impl State {
             queue,
             config,
             size,
-            view,
+            camera,
             render_pipeline,
             vertex_buffer,
             index_buffer,
-            view_buffer,
+            camera_buffer,
             bind_group,
             num_indices,
-            clear_col: RED.into(),
+            mouse_down: false,
+            mouse_pos: PhysicalPosition { x: 0.0, y: 0.0 },
         }
     }
 
@@ -344,15 +345,71 @@ impl State {
 
     fn input(&mut self, event: &WindowEvent) -> bool {
         match event {
+            WindowEvent::MouseWheel {
+                delta: MouseScrollDelta::LineDelta(_, y),
+                ..
+            } => {
+                let old_zoom = self.camera.zoom;
+                self.camera.zoom *= 1.0 - (y * LINE_ZOOM_SENSITVITY);
+
+                let zoom_delta = self.camera.zoom - old_zoom;
+
+                self.camera.position[0] -= zoom_delta * -500.0;
+                self.camera.position[1] -= zoom_delta * -100.0;
+
+                info!(
+                    "Line Zoom, Pos: ({}, {})",
+                    self.camera.position[0], self.camera.position[1]
+                );
+
+                self.camera.write_buffer(self);
+                true
+            }
+            WindowEvent::MouseWheel {
+                delta: MouseScrollDelta::PixelDelta(delta),
+                ..
+            } => {
+                info!("Pixel Zoom");
+
+                let old_zoom = self.camera.zoom;
+                self.camera.zoom *= 1.0 - (delta.y as f32 * PIXEL_ZOOM_SENSITVITY);
+
+                let zoom_delta = self.camera.zoom - old_zoom;
+
+                self.camera.position[0] -= zoom_delta * self.camera.position[0];
+                self.camera.position[1] -= zoom_delta * self.camera.position[1];
+
+                self.camera.write_buffer(self);
+
+                true
+            }
             WindowEvent::CursorMoved { position, .. } => {
-                let hue = (position.x / (self.size.width as f64)
-                    + position.y / (self.size.height as f64))
-                    * 0.5;
+                if !self.mouse_down {
+                    return false;
+                }
 
-                let mut hsv = HSV::from(self.clear_col);
-                hsv.h = hue as f32;
+                let delta = (position.x - self.mouse_pos.x, position.y - self.mouse_pos.y);
 
-                self.clear_col = hsv.into();
+                self.camera.position[0] += delta.0 as f32;
+                self.camera.position[1] += delta.1 as f32;
+                self.camera.write_buffer(self);
+
+                info!(
+                    "Moving Mouse, Pos: ({}, {})",
+                    self.camera.position[0], self.camera.position[1]
+                );
+
+                false
+            }
+            WindowEvent::MouseInput {
+                state,
+                button: MouseButton::Left,
+                ..
+            } => {
+                self.mouse_down = match state {
+                    ElementState::Pressed => true,
+                    ElementState::Released => false,
+                };
 
                 true
             }
@@ -360,12 +417,7 @@ impl State {
         }
     }
 
-    fn update(&mut self) {
-        self.view.zoom *= 0.99;
-
-        self.queue
-            .write_buffer(&self.view_buffer, 0, bytemuck::cast_slice(&[self.view]));
-    }
+    fn update(&mut self) {}
 
     fn render(&mut self) -> Result<(), wgpu::SurfaceError> {
         let output = self.surface.get_current_texture()?;
@@ -386,7 +438,7 @@ impl State {
                     view: &view,
                     resolve_target: None,
                     ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(self.clear_col.to_wgpu()),
+                        load: wgpu::LoadOp::Clear(RGB::from(WHITE).to_wgpu()),
                         store: true,
                     },
                 })],
@@ -474,6 +526,9 @@ pub async fn run() {
                     WindowEvent::Resized(physical_size) => state.resize(*physical_size),
                     WindowEvent::ScaleFactorChanged { new_inner_size, .. } => {
                         state.resize(**new_inner_size)
+                    }
+                    WindowEvent::CursorMoved { position, .. } => {
+                        state.mouse_pos = *position;
                     }
                     _ => {}
                 }
