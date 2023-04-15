@@ -240,7 +240,15 @@ impl State {
             .find(|f| f.describe().srgb)
             .unwrap_or(surface_caps.formats[0]);
 
-        let size = window.inner_size();
+        let size = {
+            cfg_if::cfg_if! {
+                if #[cfg(target_arch = "wasm32")] {
+                    get_js_window_size()
+                } else {
+                    window.inner_size()
+                }
+            }
+        };
 
         let config = wgpu::SurfaceConfiguration {
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
@@ -525,7 +533,7 @@ pub async fn run() {
 
     let event_loop = EventLoop::new();
     let window = WindowBuilder::new()
-        .with_title("Learn wgpu!")
+        .with_title("Mandelbrot WGPU")
         .build(&event_loop)
         .unwrap();
 
