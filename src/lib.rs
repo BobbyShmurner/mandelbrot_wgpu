@@ -1,6 +1,6 @@
 use wgpu::util::DeviceExt;
 use winit::{
-    dpi::PhysicalPosition,
+    dpi::{PhysicalPosition, PhysicalSize},
     event::*,
     event_loop::{ControlFlow, EventLoop},
     window::{Window, WindowBuilder},
@@ -35,6 +35,7 @@ const INDICES: &[u16] = &[0, 1, 2, 2, 3, 0];
 
 const PIXEL_ZOOM_SENSITVITY: f32 = 0.001;
 const LINE_ZOOM_SENSITVITY: f32 = 0.05;
+const DETAIL_SCALE_FACTOR: f32 = 1000.0;
 
 trait ToWGPUColor {
     fn to_wgpu(&self) -> wgpu::Color;
@@ -94,18 +95,16 @@ impl Vertex {
 #[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
 struct Camera {
     position: [f32; 2],
-    mouse: [f32; 2],
     zoom: f32,
-    pad: [i32; 3],
+    detail: u32,
 }
 
 impl Default for Camera {
     fn default() -> Self {
         Self {
             position: [0.0, 0.0],
-            mouse: [0.0, 0.0],
-            zoom: 0.01,
-            pad: [0, 0, 0],
+            zoom: 0.005,
+            detail: DETAIL_SCALE_FACTOR as u32,
         }
     }
 }
@@ -117,14 +116,26 @@ impl Camera {
             .write_buffer(&state.camera_buffer, 0, bytemuck::cast_slice(&[self]));
     }
 
-    fn zoom(&mut self, amount: f32) {
+    fn zoom(&mut self, amount: f32, mouse_pos: PhysicalPosition<f64>) {
         let old_zoom = self.zoom;
-        let old_world_mouse = self.mouse;
+        let world_mouse_pos = self.clip_to_world_pos(mouse_pos.x as f32, mouse_pos.y as f32);
+
+        // self.detail = {
+        //     let new_detial = DETAIL_SCALE_FACTOR * amount * 1920.0;
+        //     if new_detial < 0.0 {
+        //         error!("Failed to zoom out: Fractle Steps (Camera Detail) is negative!");
+        //         return;
+        //     }
+
+        //     info!("Detial: {}, Amount: {}", self.detail, amount);
+
+        //     new_detial.floor() as u32
+        // };
 
         self.zoom *= 1.0 - amount;
 
-        self.position[0] -= (old_world_mouse[0] / self.zoom) - (old_world_mouse[0] / old_zoom);
-        self.position[1] -= (old_world_mouse[1] / self.zoom) - (old_world_mouse[1] / old_zoom);
+        self.position[0] -= (world_mouse_pos.0 / self.zoom) - (world_mouse_pos.0 / old_zoom);
+        self.position[1] -= (world_mouse_pos.1 / self.zoom) - (world_mouse_pos.1 / old_zoom);
     }
 
     fn clip_to_world_pos(&self, clip_x: f32, clip_y: f32) -> (f32, f32) {
@@ -133,13 +144,6 @@ impl Camera {
             (clip_y - self.position[1]) * self.zoom,
         )
     }
-
-    fn update_mouse(&mut self, mouse_pos: &PhysicalPosition<f64>) {
-        let mouse_world_pos = self.clip_to_world_pos(mouse_pos.x as f32, mouse_pos.y as f32);
-
-        self.mouse[0] = mouse_world_pos.0;
-        self.mouse[1] = mouse_world_pos.1;
-    }
 }
 
 struct State {
@@ -147,7 +151,7 @@ struct State {
     device: wgpu::Device,
     queue: wgpu::Queue,
     config: wgpu::SurfaceConfiguration,
-    size: winit::dpi::PhysicalSize<u32>,
+    size: PhysicalSize<u32>,
     window: Window,
     camera: Camera,
     render_pipeline: wgpu::RenderPipeline,
@@ -227,8 +231,6 @@ impl State {
             )
             .await
             .expect("Unable to find a suitable GPU adapter!");
-
-        info!("Got Device");
 
         let surface_caps = surface.get_capabilities(&adapter);
         let surface_format = surface_caps
@@ -343,7 +345,8 @@ impl State {
 
         let num_indices = INDICES.len() as u32;
 
-        Self {
+        #[allow(unused_mut)]
+        let mut state = Self {
             window,
             surface,
             device,
@@ -359,7 +362,35 @@ impl State {
             num_indices,
             mouse_down: false,
             mouse_pos: PhysicalPosition { x: 0.0, y: 0.0 },
+        };
+
+        #[cfg(target_arch = "wasm32")]
+        state.force_canvas_resize(None);
+
+        state
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    fn check_resize_canvas(&mut self) {
+        let new_size = get_js_window_size();
+
+        if self.size == new_size {
+            return;
         }
+
+        self.force_canvas_resize(Some(new_size));
+    }
+
+    /// Forces set the canvas size. if `new_size` is `None`, the canvas is resized to the window size
+    #[cfg(target_arch = "wasm32")]
+    fn force_canvas_resize(&mut self, new_size: Option<PhysicalSize<u32>>) {
+        self.size = new_size.unwrap_or(get_js_window_size());
+        self.window.set_inner_size(self.size);
+    }
+
+    fn update(&mut self) {
+        #[cfg(target_arch = "wasm32")]
+        self.check_resize_canvas();
     }
 
     pub fn window(&self) -> &Window {
@@ -386,8 +417,7 @@ impl State {
                 delta: MouseScrollDelta::LineDelta(_, y),
                 ..
             } => {
-                self.camera.zoom(y * LINE_ZOOM_SENSITVITY);
-                self.camera.update_mouse(&self.mouse_pos);
+                self.camera.zoom(y * LINE_ZOOM_SENSITVITY, self.mouse_pos);
                 self.camera.write_buffer(self);
                 true
             }
@@ -395,10 +425,8 @@ impl State {
                 delta: MouseScrollDelta::PixelDelta(delta),
                 ..
             } => {
-                info!("Pixel Zoom: Delta: {}", delta.y);
-
-                self.camera.zoom(delta.y as f32 * PIXEL_ZOOM_SENSITVITY);
-                self.camera.update_mouse(&self.mouse_pos);
+                self.camera
+                    .zoom(delta.y as f32 * PIXEL_ZOOM_SENSITVITY, self.mouse_pos);
                 self.camera.write_buffer(self);
                 true
             }
@@ -412,11 +440,6 @@ impl State {
                 self.camera.position[0] += delta.0 as f32;
                 self.camera.position[1] += delta.1 as f32;
                 self.camera.write_buffer(self);
-
-                info!(
-                    "Moving Mouse, Pos: ({}, {})",
-                    self.camera.position[0], self.camera.position[1]
-                );
 
                 false
             }
@@ -435,8 +458,6 @@ impl State {
             _ => false,
         }
     }
-
-    fn update(&mut self) {}
 
     fn render(&mut self) -> Result<(), wgpu::SurfaceError> {
         let output = self.surface.get_current_texture()?;
@@ -479,6 +500,16 @@ impl State {
     }
 }
 
+#[cfg(target_arch = "wasm32")]
+pub fn get_js_window_size() -> PhysicalSize<u32> {
+    let win_js = web_sys::window().expect("Couldn't get js window");
+
+    let width = win_js.inner_width().unwrap().as_f64().unwrap() as u32;
+    let height = win_js.inner_height().unwrap().as_f64().unwrap() as u32;
+
+    PhysicalSize::new(width, height)
+}
+
 #[cfg_attr(target_arch = "wasm32", wasm_bindgen(start))]
 pub async fn run() {
     cfg_if::cfg_if! {
@@ -502,10 +533,8 @@ pub async fn run() {
     {
         // Winit prevents sizing with CSS, so we have to set
         // the size manually when on web.
-        use winit::dpi::PhysicalSize;
         use winit::platform::web::WindowExtWebSys;
 
-        window.set_inner_size(PhysicalSize::new(450, 400));
         web_sys::window()
             .and_then(|win| win.document())
             .and_then(|doc| {
@@ -520,8 +549,10 @@ pub async fn run() {
     info!("Created Window");
 
     let mut state = State::new(window).await;
+
     info!("Created State");
 
+    info!("Starting Event Loop");
     event_loop.run(move |event, _, control_flow| match event {
         Event::WindowEvent {
             ref event,
@@ -548,7 +579,6 @@ pub async fn run() {
                     }
                     WindowEvent::CursorMoved { position, .. } => {
                         state.mouse_pos = *position;
-                        state.camera.update_mouse(position);
                         state.camera.write_buffer(&mut state);
                     }
                     _ => {}
