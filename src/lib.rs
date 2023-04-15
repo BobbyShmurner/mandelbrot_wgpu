@@ -12,6 +12,30 @@ use tracing::{error, info, warn};
 #[cfg(target_arch = "wasm32")]
 use wasm_bindgen::prelude::*;
 
+const VERTICES: &[Vertex] = &[
+    Vertex {
+        position: [-1.0, -1.0, 0.0],
+        color: [0.5, 0.0, 0.5],
+    },
+    Vertex {
+        position: [1.0, -1.0, 0.0],
+        color: [0.5, 0.0, 0.5],
+    },
+    Vertex {
+        position: [1.0, 1.0, 0.0],
+        color: [0.5, 0.0, 0.5],
+    },
+    Vertex {
+        position: [-1.0, 1.0, 0.0],
+        color: [0.5, 0.0, 0.5],
+    },
+];
+
+const INDICES: &[u16] = &[0, 1, 2, 2, 3, 0];
+
+const PIXEL_ZOOM_SENSITVITY: f32 = 0.001;
+const LINE_ZOOM_SENSITVITY: f32 = 0.05;
+
 trait ToWGPUColor {
     fn to_wgpu(&self) -> wgpu::Color;
 }
@@ -69,8 +93,21 @@ impl Vertex {
 #[repr(C)]
 #[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
 struct Camera {
-    position: [f32; 3],
+    position: [f32; 2],
+    mouse: [f32; 2],
     zoom: f32,
+    pad: [i32; 3],
+}
+
+impl Default for Camera {
+    fn default() -> Self {
+        Self {
+            position: [0.0, 0.0],
+            mouse: [0.0, 0.0],
+            zoom: 0.01,
+            pad: [0, 0, 0],
+        }
+    }
 }
 
 impl Camera {
@@ -79,31 +116,31 @@ impl Camera {
             .queue
             .write_buffer(&state.camera_buffer, 0, bytemuck::cast_slice(&[self]));
     }
+
+    fn zoom(&mut self, amount: f32) {
+        let old_zoom = self.zoom;
+        let old_world_mouse = self.mouse;
+
+        self.zoom *= 1.0 - amount;
+
+        self.position[0] -= (old_world_mouse[0] / self.zoom) - (old_world_mouse[0] / old_zoom);
+        self.position[1] -= (old_world_mouse[1] / self.zoom) - (old_world_mouse[1] / old_zoom);
+    }
+
+    fn clip_to_world_pos(&self, clip_x: f32, clip_y: f32) -> (f32, f32) {
+        (
+            (clip_x - self.position[0]) * self.zoom,
+            (clip_y - self.position[1]) * self.zoom,
+        )
+    }
+
+    fn update_mouse(&mut self, mouse_pos: &PhysicalPosition<f64>) {
+        let mouse_world_pos = self.clip_to_world_pos(mouse_pos.x as f32, mouse_pos.y as f32);
+
+        self.mouse[0] = mouse_world_pos.0;
+        self.mouse[1] = mouse_world_pos.1;
+    }
 }
-
-const VERTICES: &[Vertex] = &[
-    Vertex {
-        position: [-1.0, -1.0, 0.0],
-        color: [0.5, 0.0, 0.5],
-    },
-    Vertex {
-        position: [1.0, -1.0, 0.0],
-        color: [0.5, 0.0, 0.5],
-    },
-    Vertex {
-        position: [1.0, 1.0, 0.0],
-        color: [0.5, 0.0, 0.5],
-    },
-    Vertex {
-        position: [-1.0, 1.0, 0.0],
-        color: [0.5, 0.0, 0.5],
-    },
-];
-
-const INDICES: &[u16] = &[0, 1, 2, 2, 3, 0];
-
-const PIXEL_ZOOM_SENSITVITY: f32 = 0.01;
-const LINE_ZOOM_SENSITVITY: f32 = 0.05;
 
 struct State {
     surface: wgpu::Surface,
@@ -285,8 +322,8 @@ impl State {
         });
 
         let camera = Camera {
-            position: [size.width as f32 * 0.5, size.height as f32 * 0.5, 0.0],
-            zoom: 0.01,
+            position: [size.width as f32 * 0.5, size.height as f32 * 0.5],
+            ..Default::default()
         };
 
         let camera_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
@@ -349,19 +386,8 @@ impl State {
                 delta: MouseScrollDelta::LineDelta(_, y),
                 ..
             } => {
-                let old_zoom = self.camera.zoom;
-                self.camera.zoom *= 1.0 - (y * LINE_ZOOM_SENSITVITY);
-
-                let zoom_delta = self.camera.zoom - old_zoom;
-
-                self.camera.position[0] -= zoom_delta * -500.0;
-                self.camera.position[1] -= zoom_delta * -100.0;
-
-                info!(
-                    "Line Zoom, Pos: ({}, {})",
-                    self.camera.position[0], self.camera.position[1]
-                );
-
+                self.camera.zoom(y * LINE_ZOOM_SENSITVITY);
+                self.camera.update_mouse(&self.mouse_pos);
                 self.camera.write_buffer(self);
                 true
             }
@@ -369,18 +395,11 @@ impl State {
                 delta: MouseScrollDelta::PixelDelta(delta),
                 ..
             } => {
-                info!("Pixel Zoom");
+                info!("Pixel Zoom: Delta: {}", delta.y);
 
-                let old_zoom = self.camera.zoom;
-                self.camera.zoom *= 1.0 - (delta.y as f32 * PIXEL_ZOOM_SENSITVITY);
-
-                let zoom_delta = self.camera.zoom - old_zoom;
-
-                self.camera.position[0] -= zoom_delta * self.camera.position[0];
-                self.camera.position[1] -= zoom_delta * self.camera.position[1];
-
+                self.camera.zoom(delta.y as f32 * PIXEL_ZOOM_SENSITVITY);
+                self.camera.update_mouse(&self.mouse_pos);
                 self.camera.write_buffer(self);
-
                 true
             }
             WindowEvent::CursorMoved { position, .. } => {
@@ -529,6 +548,8 @@ pub async fn run() {
                     }
                     WindowEvent::CursorMoved { position, .. } => {
                         state.mouse_pos = *position;
+                        state.camera.update_mouse(position);
+                        state.camera.write_buffer(&mut state);
                     }
                     _ => {}
                 }
