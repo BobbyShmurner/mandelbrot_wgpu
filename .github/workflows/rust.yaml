@@ -1,7 +1,10 @@
 # Taken from eframe template: https://github.com/emilk/eframe_template/blob/master/.github/workflows/rust.yml
 name: Rust Stuff
 
-on: [push, pull_request]
+on:
+  workflow_dispatch:
+  push:
+  pull_request:
 
 env:
   # This is required to enable the web_sys clipboard API which egui_web uses
