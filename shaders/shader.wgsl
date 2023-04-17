@@ -27,6 +27,11 @@ struct Camera {
 @group(0) @binding(0)
 var<uniform> cam: Camera;
 
+@group(0) @binding(1)
+var t_gradient: texture_2d<f32>;
+@group(0)@binding(2)
+var s_gradient: sampler;
+
 @fragment
 fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     let max_val: f32 = 2.0;
@@ -45,5 +50,6 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         }
     }
 
-    return vec4<f32>(vec3(mix(0.0, 1.0, f32(break_point) / f32(cam.detail)) * f32(break_point != 0u)), 1.0);
+    // return vec4<f32>(vec3(mix(0.0, 1.0, f32(break_point) / f32(cam.detail)) * f32(break_point != 0u)), 1.0);
+    return textureSample(t_gradient, s_gradient, vec2(f32(break_point) / f32(cam.detail), 0.0));
 }
