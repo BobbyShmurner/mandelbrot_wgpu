@@ -34,8 +34,8 @@ const VERTICES: &[Vertex] = &[
 
 const INDICES: &[u16] = &[0, 1, 2, 2, 3, 0];
 
-const PIXEL_ZOOM_SENSITVITY: f32 = 0.01;
-const LINE_ZOOM_SENSITVITY: f32 = 0.05;
+const PIXEL_ZOOM_SENSITVITY: f64 = 0.01;
+const LINE_ZOOM_SENSITVITY: f64 = 0.05;
 const MAX_STEP_COUNT: u32 = 500;
 
 trait ToWGPUColor {
@@ -92,11 +92,10 @@ impl Vertex {
     }
 }
 
-#[repr(C)]
-#[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
+#[derive(Debug)]
 struct Camera {
-    position: [f32; 2],
-    zoom: f32,
+    position: [f64; 2],
+    zoom: f64,
     detail: u32,
 }
 
@@ -111,15 +110,9 @@ impl Default for Camera {
 }
 
 impl Camera {
-    fn write_buffer(self, state: &mut State) {
-        // state
-        //     .queue
-        //     .write_buffer(&state.camera_buffer, 0, bytemuck::cast_slice(&[self]));
-    }
-
-    fn zoom(&mut self, amount: f32, mouse_pos: PhysicalPosition<f64>) {
+    fn zoom(&mut self, amount: f64, mouse_pos: PhysicalPosition<f64>) {
         let old_zoom = self.zoom;
-        let world_mouse_pos = self.clip_to_world_pos(mouse_pos.x as f32, mouse_pos.y as f32);
+        let world_mouse_pos = self.clip_to_world_pos(mouse_pos.x, mouse_pos.y);
 
         // self.detail = {
         //     let new_detial = DETAIL_SCALE_FACTOR * amount * 1920.0;
@@ -139,7 +132,7 @@ impl Camera {
         self.position[1] -= (world_mouse_pos.1 / self.zoom) - (world_mouse_pos.1 / old_zoom);
     }
 
-    fn clip_to_world_pos(&self, clip_x: f32, clip_y: f32) -> (f32, f32) {
+    fn clip_to_world_pos(&self, clip_x: f64, clip_y: f64) -> (f64, f64) {
         (
             (clip_x - self.position[0]) * self.zoom,
             (clip_y - self.position[1]) * self.zoom,
@@ -271,18 +264,18 @@ impl State {
             .build()
             .unwrap();
 
-        let main_width = 1920;
-        let main_height = 1080;
+        let main_width = 800;
+        let main_height = 600;
 
         let camera = Camera {
-            // position: [size.width as f32 * 0.5, size.height as f32 * 0.5],
+            // position: [main_width as f64 * 0.5, main_height as f64 * 0.5],
             // ..Default::default()
             position: [19693.422, -28863.879],
             zoom: 0.00002087276,
             ..Default::default()
         };
 
-        let max_val_squared: f32 = 4.0;
+        let max_val_squared = 4.0;
         let sub_samples = 16;
         let mut rng = rand::thread_rng();
 
@@ -290,8 +283,8 @@ impl State {
 
         for y in 0..main_height {
             for x in 0..main_width {
-                let x = x as f32 - camera.position[0];
-                let y = y as f32 - camera.position[1];
+                let x = x as f64 - camera.position[0];
+                let y = y as f64 - camera.position[1];
 
                 let mut avg_r = 0.0;
                 let mut avg_g = 0.0;
@@ -314,7 +307,7 @@ impl State {
                         let mag_squared = zx * zx + zy * zy;
 
                         if mag_squared > max_val_squared {
-                            let mag = mag_squared.sqrt() as f64;
+                            let mag = mag_squared.sqrt();
 
                             let col = grad.at(i as f64 - mag.log2().max(1.0).log2());
 
@@ -630,8 +623,8 @@ impl State {
                 delta: MouseScrollDelta::LineDelta(_, y),
                 ..
             } => {
-                self.camera.zoom(y * LINE_ZOOM_SENSITVITY, self.mouse_pos);
-                self.camera.write_buffer(self);
+                self.camera
+                    .zoom(*y as f64 * LINE_ZOOM_SENSITVITY, self.mouse_pos);
                 true
             }
             WindowEvent::MouseWheel {
@@ -639,8 +632,7 @@ impl State {
                 ..
             } => {
                 self.camera
-                    .zoom(delta.y as f32 * PIXEL_ZOOM_SENSITVITY, self.mouse_pos);
-                self.camera.write_buffer(self);
+                    .zoom(delta.y * PIXEL_ZOOM_SENSITVITY, self.mouse_pos);
                 true
             }
             WindowEvent::CursorMoved { position, .. } => {
@@ -650,9 +642,8 @@ impl State {
 
                 let delta = (position.x - self.mouse_pos.x, position.y - self.mouse_pos.y);
 
-                self.camera.position[0] += delta.0 as f32;
-                self.camera.position[1] += delta.1 as f32;
-                self.camera.write_buffer(self);
+                self.camera.position[0] += delta.0;
+                self.camera.position[1] += delta.1;
 
                 false
             }
@@ -792,7 +783,6 @@ pub async fn run() {
                     }
                     WindowEvent::CursorMoved { position, .. } => {
                         state.mouse_pos = *position;
-                        state.camera.write_buffer(&mut state);
                     }
                     _ => {}
                 }
