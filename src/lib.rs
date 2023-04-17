@@ -33,7 +33,7 @@ const VERTICES: &[Vertex] = &[
 
 const INDICES: &[u16] = &[0, 1, 2, 2, 3, 0];
 
-const PIXEL_ZOOM_SENSITVITY: f32 = 0.01;
+const PIXEL_ZOOM_SENSITVITY: f32 = 0.001;
 const LINE_ZOOM_SENSITVITY: f32 = 0.05;
 const MAX_STEP_COUNT: u32 = 1000;
 
