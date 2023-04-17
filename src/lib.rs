@@ -1,4 +1,5 @@
 use rand::Rng;
+use rayon::prelude::*;
 use wgpu::util::DeviceExt;
 use winit::{
     dpi::{PhysicalPosition, PhysicalSize},
@@ -12,6 +13,8 @@ use tracing::{error, info, warn};
 
 #[cfg(target_arch = "wasm32")]
 use wasm_bindgen::prelude::*;
+#[cfg(target_arch = "wasm32")]
+pub use wasm_bindgen_rayon::init_thread_pool;
 
 const VERTICES: &[Vertex] = &[
     Vertex {
@@ -148,6 +151,8 @@ struct State {
     size: PhysicalSize<u32>,
     window: Window,
     camera: Camera,
+    gradient: colorgrad::Gradient,
+    main_texture: wgpu::Texture,
     render_pipeline: wgpu::RenderPipeline,
     vertex_buffer: wgpu::Buffer,
     index_buffer: wgpu::Buffer,
@@ -215,6 +220,9 @@ impl State {
             .find(|f| f.describe().srgb)
             .unwrap_or(surface_caps.formats[0]);
 
+        let main_width: u32 = 1920;
+        let main_height: u32 = 1080;
+
         let size = {
             cfg_if::cfg_if! {
                 if #[cfg(target_arch = "wasm32")] {
@@ -238,15 +246,12 @@ impl State {
 
         let shader = device.create_shader_module(wgpu::include_wgsl!("../shaders/shader.wgsl"));
 
-        let grad = colorgrad::turbo();
-        let grad = colorgrad::CustomGradient::new()
-            .colors(&grad.colors(MAX_STEP_COUNT as usize))
+        let gradient = colorgrad::turbo();
+        let gradient = colorgrad::CustomGradient::new()
+            .colors(&gradient.colors(MAX_STEP_COUNT as usize))
             .domain(&[0.0, MAX_STEP_COUNT as f64])
             .build()
             .unwrap();
-
-        let main_width = 800;
-        let main_height = 600;
 
         let camera = Camera {
             // position: [main_width as f64 * 0.5, main_height as f64 * 0.5],
@@ -255,58 +260,6 @@ impl State {
             zoom: 0.00002087276,
             ..Default::default()
         };
-
-        let max_val_squared = 4.0;
-        let sub_samples = 16;
-        let mut rng = rand::thread_rng();
-
-        let mut pixels: Vec<u8> = Vec::with_capacity((main_width * main_height * 4) as usize);
-
-        for y in 0..main_height {
-            for x in 0..main_width {
-                let x = x as f64 - camera.position[0];
-                let y = y as f64 - camera.position[1];
-
-                let mut avg_r = 0.0;
-                let mut avg_g = 0.0;
-                let mut avg_b = 0.0;
-
-                for _i in 0..sub_samples {
-                    let cx = (x + rng.gen_range(0.0..1.0)) * camera.zoom;
-                    let cy = (y + rng.gen_range(0.0..1.0)) * camera.zoom;
-
-                    let mut zx = 0.0;
-                    let mut zy = 0.0;
-
-                    for i in 0..=camera.detail {
-                        let z_squared_x = zx * zx - zy * zy;
-                        let z_squared_y = 2.0 * zx * zy;
-
-                        zx = cx + z_squared_x;
-                        zy = cy + z_squared_y;
-
-                        let mag_squared = zx * zx + zy * zy;
-
-                        if mag_squared > max_val_squared {
-                            let mag = mag_squared.sqrt();
-
-                            let col = grad.at(i as f64 - mag.log2().max(1.0).log2());
-
-                            avg_r += col.r;
-                            avg_g += col.g;
-                            avg_b += col.b;
-
-                            break;
-                        }
-                    }
-                }
-
-                pixels.push((avg_r / sub_samples as f64 * 255.0) as u8);
-                pixels.push((avg_g / sub_samples as f64 * 255.0) as u8);
-                pixels.push((avg_b / sub_samples as f64 * 255.0) as u8);
-                pixels.push(255);
-            }
-        }
 
         let main_size = wgpu::Extent3d {
             width: main_width,
@@ -335,22 +288,6 @@ impl State {
             mipmap_filter: wgpu::FilterMode::Nearest,
             ..Default::default()
         });
-
-        queue.write_texture(
-            wgpu::ImageCopyTexture {
-                texture: &main_texture,
-                mip_level: 0,
-                origin: wgpu::Origin3d::ZERO,
-                aspect: wgpu::TextureAspect::All,
-            },
-            &pixels,
-            wgpu::ImageDataLayout {
-                offset: 0,
-                bytes_per_row: std::num::NonZeroU32::new(4 * main_width),
-                rows_per_image: std::num::NonZeroU32::new(main_height),
-            },
-            main_size,
-        );
 
         let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             entries: &[
@@ -453,7 +390,9 @@ impl State {
             queue,
             config,
             size,
+            gradient,
             camera,
+            main_texture,
             render_pipeline,
             vertex_buffer,
             index_buffer,
@@ -465,6 +404,7 @@ impl State {
 
         #[cfg(target_arch = "wasm32")]
         state.force_canvas_resize(None);
+        state.redraw();
 
         state
     }
@@ -492,6 +432,81 @@ impl State {
         self.check_resize_canvas();
     }
 
+    fn redraw(&mut self) {
+        let max_val_squared = 4.0;
+        let sub_samples = 1;
+
+        let main_size = self.main_texture.size();
+
+        let pixels: Vec<u8> = vec![0; (main_size.width * main_size.height) as usize]
+            .par_iter()
+            .enumerate()
+            .map(|(pixel, _)| {
+                let mut rng = rand::thread_rng();
+
+                let x = (pixel % main_size.width as usize) as f64 - self.camera.position[0];
+                let y = (pixel / main_size.height as usize) as f64 - self.camera.position[1];
+
+                let mut avg_r = 0.0;
+                let mut avg_g = 0.0;
+                let mut avg_b = 0.0;
+
+                for _ in 0..sub_samples {
+                    let cx = (x + rng.gen_range(0.0..1.0)) * self.camera.zoom;
+                    let cy = (y + rng.gen_range(0.0..1.0)) * self.camera.zoom;
+
+                    let mut zx = 0.0;
+                    let mut zy = 0.0;
+
+                    for i in 0..=self.camera.detail {
+                        let z_squared_x = zx * zx - zy * zy;
+                        let z_squared_y = 2.0 * zx * zy;
+
+                        zx = cx + z_squared_x;
+                        zy = cy + z_squared_y;
+
+                        let mag_squared = zx * zx + zy * zy;
+
+                        if mag_squared > max_val_squared {
+                            let mag = mag_squared.sqrt();
+                            let col = self.gradient.at(i as f64 - mag.log2().max(1.0).log2());
+
+                            avg_r += col.r;
+                            avg_g += col.g;
+                            avg_b += col.b;
+
+                            break;
+                        }
+                    }
+                }
+
+                [
+                    (avg_r / sub_samples as f64 * 255.0) as u8,
+                    (avg_g / sub_samples as f64 * 255.0) as u8,
+                    (avg_b / sub_samples as f64 * 255.0) as u8,
+                    255,
+                ]
+            })
+            .flatten()
+            .collect();
+
+        self.queue.write_texture(
+            wgpu::ImageCopyTexture {
+                texture: &self.main_texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            &pixels,
+            wgpu::ImageDataLayout {
+                offset: 0,
+                bytes_per_row: std::num::NonZeroU32::new(4 * main_size.width),
+                rows_per_image: std::num::NonZeroU32::new(main_size.height),
+            },
+            main_size,
+        );
+    }
+
     pub fn window(&self) -> &Window {
         &self.window
     }
@@ -502,6 +517,8 @@ impl State {
             self.config.width = new_size.width;
             self.config.height = new_size.height;
             self.surface.configure(&self.device, &self.config);
+
+            self.redraw();
         } else {
             error!(
                 "Failed to resize window: Invalid window size ({}x{})!",
@@ -518,6 +535,8 @@ impl State {
             } => {
                 self.camera
                     .zoom(*y as f64 * LINE_ZOOM_SENSITVITY, self.mouse_pos);
+                self.redraw();
+
                 true
             }
             WindowEvent::MouseWheel {
@@ -526,6 +545,8 @@ impl State {
             } => {
                 self.camera
                     .zoom(delta.y * PIXEL_ZOOM_SENSITVITY, self.mouse_pos);
+                self.redraw();
+
                 true
             }
             WindowEvent::CursorMoved { position, .. } => {
@@ -537,6 +558,7 @@ impl State {
 
                 self.camera.position[0] += delta.0;
                 self.camera.position[1] += delta.1;
+                self.redraw();
 
                 false
             }
