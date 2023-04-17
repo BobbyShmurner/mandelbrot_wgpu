@@ -23,16 +23,7 @@ var t_main: texture_2d<f32>;
 @group(0) @binding(1)
 var s_main: sampler;
 
-@group(0) @binding(2)
-var t_gradient: texture_2d<f32>;
-@group(0) @binding(3)
-var s_gradient: sampler;
-
 @fragment
 fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
-    // let value: f32 = textureSample(t_main, s_main, in.text_coord.xy).x;
-
-    // return textureSample(t_gradient, s_gradient, vec2(value, 0.0));
-
     return textureSample(t_main, s_main, in.text_coord.xy);
 }
