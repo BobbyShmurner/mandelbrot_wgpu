@@ -1,3 +1,4 @@
+use rand::Rng;
 use wgpu::util::DeviceExt;
 use winit::{
     dpi::{PhysicalPosition, PhysicalSize},
@@ -35,7 +36,7 @@ const INDICES: &[u16] = &[0, 1, 2, 2, 3, 0];
 
 const PIXEL_ZOOM_SENSITVITY: f32 = 0.01;
 const LINE_ZOOM_SENSITVITY: f32 = 0.05;
-const MAX_STEP_COUNT: u32 = 1000;
+const MAX_STEP_COUNT: u32 = 500;
 
 trait ToWGPUColor {
     fn to_wgpu(&self) -> wgpu::Color;
@@ -111,9 +112,9 @@ impl Default for Camera {
 
 impl Camera {
     fn write_buffer(self, state: &mut State) {
-        state
-            .queue
-            .write_buffer(&state.camera_buffer, 0, bytemuck::cast_slice(&[self]));
+        // state
+        //     .queue
+        //     .write_buffer(&state.camera_buffer, 0, bytemuck::cast_slice(&[self]));
     }
 
     fn zoom(&mut self, amount: f32, mouse_pos: PhysicalPosition<f64>) {
@@ -157,7 +158,7 @@ struct State {
     render_pipeline: wgpu::RenderPipeline,
     vertex_buffer: wgpu::Buffer,
     index_buffer: wgpu::Buffer,
-    camera_buffer: wgpu::Buffer,
+    // camera_buffer: wgpu::Buffer,
     bind_group: wgpu::BindGroup,
     num_indices: u32,
     mouse_down: bool,
@@ -264,20 +265,131 @@ impl State {
         let shader = device.create_shader_module(wgpu::include_wgsl!("../shaders/shader.wgsl"));
 
         let grad = colorgrad::turbo();
+        let grad = colorgrad::CustomGradient::new()
+            .colors(&grad.colors(MAX_STEP_COUNT as usize))
+            .domain(&[0.0, MAX_STEP_COUNT as f64])
+            .build()
+            .unwrap();
 
-        let width = MAX_STEP_COUNT;
-        let height = 1;
+        let main_width = 800;
+        let main_height = 600;
 
-        let mut imgbuf = image::ImageBuffer::new(width, height);
+        let mut main_imgbuf = image::ImageBuffer::new(main_width, main_height);
 
-        for (x, _, pixel) in imgbuf.enumerate_pixels_mut() {
-            let rgba = grad.at(x as f64 / width as f64).to_rgba8();
+        let camera = Camera {
+            position: [size.width as f32 * 0.5, size.height as f32 * 0.5],
+            ..Default::default()
+        };
+
+        let max_val_squared: f32 = 4.0;
+        let sub_samples = 16;
+        let mut rng = rand::thread_rng();
+
+        for (x, y, pixel) in main_imgbuf.enumerate_pixels_mut() {
+            let x = x as f32 - camera.position[0];
+            let y = y as f32 - camera.position[1];
+
+            let mut avg_r = 0.0;
+            let mut avg_g = 0.0;
+            let mut avg_b = 0.0;
+
+            for _i in 0..sub_samples {
+                let cx = (x + rng.gen_range(0.0..1.0)) * camera.zoom;
+                let cy = (y + rng.gen_range(0.0..1.0)) * camera.zoom;
+
+                let mut zx = 0.0;
+                let mut zy = 0.0;
+
+                for i in 0..=camera.detail {
+                    let z_squared_x = zx * zx - zy * zy;
+                    let z_squared_y = 2.0 * zx * zy;
+
+                    zx = cx + z_squared_x;
+                    zy = cy + z_squared_y;
+
+                    let mag_squared = zx * zx + zy * zy;
+
+                    if mag_squared > max_val_squared {
+                        let mag = mag_squared.sqrt() as f64;
+
+                        let col = grad.at(i as f64 - mag.log2().max(1.0).log2());
+
+                        avg_r += col.r;
+                        avg_g += col.g;
+                        avg_b += col.b;
+
+                        break;
+                    }
+                }
+            }
+
+            *pixel = image::Rgba([
+                (avg_r / sub_samples as f64 * 255.0) as u8,
+                (avg_g / sub_samples as f64 * 255.0) as u8,
+                (avg_b / sub_samples as f64 * 255.0) as u8,
+                255,
+            ]);
+        }
+
+        let main_size = wgpu::Extent3d {
+            width: main_width,
+            height: main_height,
+            depth_or_array_layers: 1,
+        };
+
+        let main_texture = device.create_texture(&wgpu::TextureDescriptor {
+            size: main_size,
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba8UnormSrgb,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+            label: Some("main texture"),
+            view_formats: &[],
+        });
+
+        let main_view = main_texture.create_view(&wgpu::TextureViewDescriptor::default());
+        let main_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+            address_mode_u: wgpu::AddressMode::ClampToEdge,
+            address_mode_v: wgpu::AddressMode::ClampToEdge,
+            address_mode_w: wgpu::AddressMode::ClampToEdge,
+            mag_filter: wgpu::FilterMode::Linear,
+            min_filter: wgpu::FilterMode::Nearest,
+            mipmap_filter: wgpu::FilterMode::Nearest,
+            ..Default::default()
+        });
+
+        queue.write_texture(
+            wgpu::ImageCopyTexture {
+                texture: &main_texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            &main_imgbuf.into_vec(),
+            wgpu::ImageDataLayout {
+                offset: 0,
+                bytes_per_row: std::num::NonZeroU32::new(4 * main_width),
+                rows_per_image: std::num::NonZeroU32::new(main_height),
+            },
+            main_size,
+        );
+
+        let grad = colorgrad::turbo();
+
+        let grad_width = MAX_STEP_COUNT;
+        let grad_height = 1;
+
+        let mut grad_imgbuf = image::ImageBuffer::new(grad_width, grad_height);
+
+        for (x, _, pixel) in grad_imgbuf.enumerate_pixels_mut() {
+            let rgba = grad.at(x as f64 / grad_width as f64).to_rgba8();
             *pixel = image::Rgba(rgba);
         }
 
         let gradient_size = wgpu::Extent3d {
-            width,
-            height,
+            width: grad_width,
+            height: grad_height,
             depth_or_array_layers: 1,
         };
 
@@ -311,11 +423,11 @@ impl State {
                 origin: wgpu::Origin3d::ZERO,
                 aspect: wgpu::TextureAspect::All,
             },
-            &imgbuf.into_vec(),
+            &grad_imgbuf.into_vec(),
             wgpu::ImageDataLayout {
                 offset: 0,
-                bytes_per_row: std::num::NonZeroU32::new(4 * width),
-                rows_per_image: std::num::NonZeroU32::new(height),
+                bytes_per_row: std::num::NonZeroU32::new(4 * grad_width),
+                rows_per_image: std::num::NonZeroU32::new(grad_height),
             },
             gradient_size,
         );
@@ -325,15 +437,21 @@ impl State {
                 wgpu::BindGroupLayoutEntry {
                     binding: 0,
                     visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Uniform,
-                        has_dynamic_offset: false,
-                        min_binding_size: None,
+                    ty: wgpu::BindingType::Texture {
+                        multisampled: false,
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
                     },
                     count: None,
                 },
                 wgpu::BindGroupLayoutEntry {
                     binding: 1,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 2,
                     visibility: wgpu::ShaderStages::FRAGMENT,
                     ty: wgpu::BindingType::Texture {
                         multisampled: false,
@@ -343,7 +461,7 @@ impl State {
                     count: None,
                 },
                 wgpu::BindGroupLayoutEntry {
-                    binding: 2,
+                    binding: 3,
                     visibility: wgpu::ShaderStages::FRAGMENT,
                     ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
                     count: None,
@@ -406,16 +524,11 @@ impl State {
             usage: wgpu::BufferUsages::INDEX,
         });
 
-        let camera = Camera {
-            position: [size.width as f32 * 0.5, size.height as f32 * 0.5],
-            ..Default::default()
-        };
-
-        let camera_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("Camera Buffer"),
-            contents: bytemuck::cast_slice(&[camera]),
-            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-        });
+        // let camera_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        //     label: Some("Camera Buffer"),
+        //     contents: bytemuck::cast_slice(&[camera]),
+        //     usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+        // });
 
         let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("Bind Group"),
@@ -423,14 +536,18 @@ impl State {
             entries: &[
                 wgpu::BindGroupEntry {
                     binding: 0,
-                    resource: camera_buffer.as_entire_binding(),
+                    resource: wgpu::BindingResource::TextureView(&main_view),
                 },
                 wgpu::BindGroupEntry {
                     binding: 1,
-                    resource: wgpu::BindingResource::TextureView(&gradient_texture_view),
+                    resource: wgpu::BindingResource::Sampler(&main_sampler),
                 },
                 wgpu::BindGroupEntry {
                     binding: 2,
+                    resource: wgpu::BindingResource::TextureView(&gradient_texture_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 3,
                     resource: wgpu::BindingResource::Sampler(&gradient_sampler),
                 },
             ],
@@ -450,7 +567,7 @@ impl State {
             render_pipeline,
             vertex_buffer,
             index_buffer,
-            camera_buffer,
+            // camera_buffer,
             bind_group,
             num_indices,
             mouse_down: false,
