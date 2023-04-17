@@ -33,7 +33,7 @@ const VERTICES: &[Vertex] = &[
 
 const INDICES: &[u16] = &[0, 1, 2, 2, 3, 0];
 
-const PIXEL_ZOOM_SENSITVITY: f32 = 0.001;
+const PIXEL_ZOOM_SENSITVITY: f32 = 0.01;
 const LINE_ZOOM_SENSITVITY: f32 = 0.05;
 const MAX_STEP_COUNT: u32 = 1000;
 
@@ -263,17 +263,92 @@ impl State {
 
         let shader = device.create_shader_module(wgpu::include_wgsl!("../shaders/shader.wgsl"));
 
+        let grad = colorgrad::turbo();
+
+        let width = MAX_STEP_COUNT;
+        let height = 1;
+
+        let mut imgbuf = image::ImageBuffer::new(width, height);
+
+        for (x, _, pixel) in imgbuf.enumerate_pixels_mut() {
+            let rgba = grad.at(x as f64 / width as f64).to_rgba8();
+            *pixel = image::Rgba(rgba);
+        }
+
+        let gradient_size = wgpu::Extent3d {
+            width,
+            height,
+            depth_or_array_layers: 1,
+        };
+
+        let gradient_texture = device.create_texture(&wgpu::TextureDescriptor {
+            size: gradient_size,
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba8UnormSrgb,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+            label: Some("gradient texture"),
+            view_formats: &[],
+        });
+
+        let gradient_texture_view =
+            gradient_texture.create_view(&wgpu::TextureViewDescriptor::default());
+        let gradient_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+            address_mode_u: wgpu::AddressMode::ClampToEdge,
+            address_mode_v: wgpu::AddressMode::ClampToEdge,
+            address_mode_w: wgpu::AddressMode::ClampToEdge,
+            mag_filter: wgpu::FilterMode::Linear,
+            min_filter: wgpu::FilterMode::Nearest,
+            mipmap_filter: wgpu::FilterMode::Nearest,
+            ..Default::default()
+        });
+
+        queue.write_texture(
+            wgpu::ImageCopyTexture {
+                texture: &gradient_texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            &imgbuf.into_vec(),
+            wgpu::ImageDataLayout {
+                offset: 0,
+                bytes_per_row: std::num::NonZeroU32::new(4 * width),
+                rows_per_image: std::num::NonZeroU32::new(height),
+            },
+            gradient_size,
+        );
+
         let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            entries: &[wgpu::BindGroupLayoutEntry {
-                binding: 0,
-                visibility: wgpu::ShaderStages::FRAGMENT,
-                ty: wgpu::BindingType::Buffer {
-                    ty: wgpu::BufferBindingType::Uniform,
-                    has_dynamic_offset: false,
-                    min_binding_size: None,
+            entries: &[
+                wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
                 },
-                count: None,
-            }],
+                wgpu::BindGroupLayoutEntry {
+                    binding: 1,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        multisampled: false,
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 2,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                    count: None,
+                },
+            ],
             label: Some("Bind Group Layout"),
         });
 
@@ -345,58 +420,23 @@ impl State {
         let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("Bind Group"),
             layout: &bind_group_layout,
-            entries: &[wgpu::BindGroupEntry {
-                binding: 0,
-                resource: camera_buffer.as_entire_binding(),
-            }],
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: camera_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::TextureView(&gradient_texture_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: wgpu::BindingResource::Sampler(&gradient_sampler),
+                },
+            ],
         });
 
         let num_indices = INDICES.len() as u32;
-
-        let grad = colorgrad::turbo();
-
-        let width = MAX_STEP_COUNT;
-        let height = 1;
-
-        let mut imgbuf = image::ImageBuffer::new(width, height);
-
-        for (x, _, pixel) in imgbuf.enumerate_pixels_mut() {
-            let rgba = grad.at(x as f64 / width as f64).to_rgba8();
-            *pixel = image::Rgba(rgba);
-        }
-
-        let gradient_size = wgpu::Extent3d {
-            width,
-            height,
-            depth_or_array_layers: 1,
-        };
-
-        let gradient_texture = device.create_texture(&wgpu::TextureDescriptor {
-            size: gradient_size,
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            format: wgpu::TextureFormat::Rgba8UnormSrgb,
-            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
-            label: Some("gradient texture"),
-            view_formats: &[],
-        });
-
-        queue.write_texture(
-            wgpu::ImageCopyTexture {
-                texture: &gradient_texture,
-                mip_level: 0,
-                origin: wgpu::Origin3d::ZERO,
-                aspect: wgpu::TextureAspect::All,
-            },
-            &imgbuf.into_vec(),
-            wgpu::ImageDataLayout {
-                offset: 0,
-                bytes_per_row: std::num::NonZeroU32::new(4 * width),
-                rows_per_image: std::num::NonZeroU32::new(height),
-            },
-            gradient_size,
-        );
 
         #[allow(unused_mut)] // We add this to prevent the warning when not targeting wasm
         let mut state = Self {
