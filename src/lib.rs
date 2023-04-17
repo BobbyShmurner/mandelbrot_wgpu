@@ -271,13 +271,14 @@ impl State {
             .build()
             .unwrap();
 
-        let main_width = 800;
-        let main_height = 600;
-
-        let mut main_imgbuf = image::ImageBuffer::new(main_width, main_height);
+        let main_width = 1920;
+        let main_height = 1080;
 
         let camera = Camera {
-            position: [size.width as f32 * 0.5, size.height as f32 * 0.5],
+            // position: [size.width as f32 * 0.5, size.height as f32 * 0.5],
+            // ..Default::default()
+            position: [19693.422, -28863.879],
+            zoom: 0.00002087276,
             ..Default::default()
         };
 
@@ -285,50 +286,52 @@ impl State {
         let sub_samples = 16;
         let mut rng = rand::thread_rng();
 
-        for (x, y, pixel) in main_imgbuf.enumerate_pixels_mut() {
-            let x = x as f32 - camera.position[0];
-            let y = y as f32 - camera.position[1];
+        let mut pixels: Vec<u8> = Vec::with_capacity((main_width * main_height * 4) as usize);
 
-            let mut avg_r = 0.0;
-            let mut avg_g = 0.0;
-            let mut avg_b = 0.0;
+        for y in 0..main_height {
+            for x in 0..main_width {
+                let x = x as f32 - camera.position[0];
+                let y = y as f32 - camera.position[1];
 
-            for _i in 0..sub_samples {
-                let cx = (x + rng.gen_range(0.0..1.0)) * camera.zoom;
-                let cy = (y + rng.gen_range(0.0..1.0)) * camera.zoom;
+                let mut avg_r = 0.0;
+                let mut avg_g = 0.0;
+                let mut avg_b = 0.0;
 
-                let mut zx = 0.0;
-                let mut zy = 0.0;
+                for _i in 0..sub_samples {
+                    let cx = (x + rng.gen_range(0.0..1.0)) * camera.zoom;
+                    let cy = (y + rng.gen_range(0.0..1.0)) * camera.zoom;
 
-                for i in 0..=camera.detail {
-                    let z_squared_x = zx * zx - zy * zy;
-                    let z_squared_y = 2.0 * zx * zy;
+                    let mut zx = 0.0;
+                    let mut zy = 0.0;
 
-                    zx = cx + z_squared_x;
-                    zy = cy + z_squared_y;
+                    for i in 0..=camera.detail {
+                        let z_squared_x = zx * zx - zy * zy;
+                        let z_squared_y = 2.0 * zx * zy;
 
-                    let mag_squared = zx * zx + zy * zy;
+                        zx = cx + z_squared_x;
+                        zy = cy + z_squared_y;
 
-                    if mag_squared > max_val_squared {
-                        let mag = mag_squared.sqrt() as f64;
+                        let mag_squared = zx * zx + zy * zy;
 
-                        let col = grad.at(i as f64 - mag.log2().max(1.0).log2());
+                        if mag_squared > max_val_squared {
+                            let mag = mag_squared.sqrt() as f64;
 
-                        avg_r += col.r;
-                        avg_g += col.g;
-                        avg_b += col.b;
+                            let col = grad.at(i as f64 - mag.log2().max(1.0).log2());
 
-                        break;
+                            avg_r += col.r;
+                            avg_g += col.g;
+                            avg_b += col.b;
+
+                            break;
+                        }
                     }
                 }
-            }
 
-            *pixel = image::Rgba([
-                (avg_r / sub_samples as f64 * 255.0) as u8,
-                (avg_g / sub_samples as f64 * 255.0) as u8,
-                (avg_b / sub_samples as f64 * 255.0) as u8,
-                255,
-            ]);
+                pixels.push((avg_r / sub_samples as f64 * 255.0) as u8);
+                pixels.push((avg_g / sub_samples as f64 * 255.0) as u8);
+                pixels.push((avg_b / sub_samples as f64 * 255.0) as u8);
+                pixels.push(255);
+            }
         }
 
         let main_size = wgpu::Extent3d {
@@ -366,7 +369,7 @@ impl State {
                 origin: wgpu::Origin3d::ZERO,
                 aspect: wgpu::TextureAspect::All,
             },
-            &main_imgbuf.into_vec(),
+            &pixels,
             wgpu::ImageDataLayout {
                 offset: 0,
                 bytes_per_row: std::num::NonZeroU32::new(4 * main_width),
