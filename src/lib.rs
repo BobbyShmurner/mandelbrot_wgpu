@@ -501,8 +501,6 @@ impl State {
                     self.camera.subsamples = (self.camera.subsamples as f32 + y).max(1.0) as u32;
                     self.camera.write_buffer(self);
 
-                    info!("Sub samples: {}", self.camera.subsamples);
-
                     true
                 }
                 _ => {
@@ -521,8 +519,6 @@ impl State {
                     self.camera.subsamples =
                         (self.camera.subsamples as f64 + delta.y.signum()).max(1.0) as u32;
                     self.camera.write_buffer(self);
-
-                    info!("Sub samples: {}", self.camera.subsamples);
 
                     true
                 }
