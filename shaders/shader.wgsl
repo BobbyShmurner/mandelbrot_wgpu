@@ -21,7 +21,9 @@ fn vs_main(in: VertexInput) -> VertexOutput {
 struct Camera {
     pos: vec2<f32>,
     zoom: f32,
-    detail: u32
+    detail: u32,
+    subsamples: u32,
+    padding: vec2<u32>,
 }
 
 @group(0) @binding(0)
@@ -40,12 +42,10 @@ fn gold_noise(xy: vec2<f32>, seed: f32) -> f32 {
 
 @fragment
 fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
-    let subsamples = 16u;
-
     var seed = 34.346;
     var avg_col = vec4(0.0, 0.0, 0.0, 1.0);
 
-    for (var s: u32 = 0u; s < subsamples; s++) {
+    for (var s: u32 = 0u; s < cam.subsamples; s++) {
         let rand_x = mix(-0.5, 0.5, gold_noise(in.clip_position.xy, seed));
         seed += rand_x;
 
@@ -70,5 +70,5 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         avg_col += textureSample(t_gradient, s_gradient, vec2((f32(breakpoint) - log2(max(1.0, log2(length(z))))) / f32(cam.detail), 0.0));
     }
 
-    return vec4(avg_col.xyz / f32(subsamples), 1.0);
+    return vec4(avg_col.xyz / f32(cam.subsamples), 1.0);
 }

@@ -97,6 +97,8 @@ struct Camera {
     position: [f32; 2],
     zoom: f32,
     detail: u32,
+    subsamples: u32,
+    padding: [u32; 3],
 }
 
 impl Default for Camera {
@@ -105,6 +107,8 @@ impl Default for Camera {
             position: [0.0, 0.0],
             zoom: 0.005,
             detail: MAX_STEP_COUNT,
+            subsamples: 4,
+            padding: [0, 0, 0],
         }
     }
 }
@@ -188,24 +192,6 @@ impl State {
             })
             .await
             .unwrap();
-
-        // let backends = wgpu::util::backend_bits_from_env().unwrap_or_else(wgpu::Backends::all);
-        // let dx12_shader_compiler = wgpu::util::dx12_shader_compiler_from_env().unwrap_or_default();
-
-        // let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
-        //     backends,
-        //     dx12_shader_compiler,
-        // });
-        // let (size, surface) = unsafe {
-        //     let size = window.inner_size();
-        //     let surface = instance.create_surface(&window).unwrap();
-
-        //     (size, surface)
-        // };
-        // let adapter =
-        //     wgpu::util::initialize_adapter_from_env_or_default(&instance, backends, Some(&surface))
-        //         .await
-        //         .expect("No suitable GPU adapters found on the system!");
 
         info!("Adapter: {:#?}", adapter.get_info());
         info!("Adapter Features: {:?}", adapter.features());
@@ -508,21 +494,45 @@ impl State {
         match event {
             WindowEvent::MouseWheel {
                 delta: MouseScrollDelta::LineDelta(_, y),
+                modifiers,
                 ..
-            } => {
-                self.camera.zoom(y * LINE_ZOOM_SENSITVITY, self.mouse_pos);
-                self.camera.write_buffer(self);
-                true
-            }
+            } => match *modifiers {
+                ModifiersState::ALT => {
+                    self.camera.subsamples = (self.camera.subsamples as f32 + y).max(1.0) as u32;
+                    self.camera.write_buffer(self);
+
+                    info!("Sub samples: {}", self.camera.subsamples);
+
+                    true
+                }
+                _ => {
+                    self.camera.zoom(y * LINE_ZOOM_SENSITVITY, self.mouse_pos);
+                    self.camera.write_buffer(self);
+
+                    true
+                }
+            },
             WindowEvent::MouseWheel {
                 delta: MouseScrollDelta::PixelDelta(delta),
+                modifiers,
                 ..
-            } => {
-                self.camera
-                    .zoom(delta.y as f32 * PIXEL_ZOOM_SENSITVITY, self.mouse_pos);
-                self.camera.write_buffer(self);
-                true
-            }
+            } => match *modifiers {
+                ModifiersState::ALT => {
+                    self.camera.subsamples =
+                        (self.camera.subsamples as f64 + delta.y.signum()).max(1.0) as u32;
+                    self.camera.write_buffer(self);
+
+                    info!("Sub samples: {}", self.camera.subsamples);
+
+                    true
+                }
+                _ => {
+                    self.camera
+                        .zoom(delta.y as f32 * PIXEL_ZOOM_SENSITVITY, self.mouse_pos);
+                    self.camera.write_buffer(self);
+                    true
+                }
+            },
             WindowEvent::CursorMoved { position, .. } => {
                 if !self.mouse_down {
                     return false;
