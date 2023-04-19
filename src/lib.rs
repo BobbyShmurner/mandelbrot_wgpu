@@ -1,3 +1,6 @@
+mod app;
+pub use app::App;
+
 use wgpu::util::DeviceExt;
 use winit::{
     dpi::{PhysicalPosition, PhysicalSize},
